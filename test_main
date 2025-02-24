@@ -1,0 +1,122 @@
+name: '$(BuildDefinitionName).$(Date:yyyyMMdd).$(Rev:r)-$(Build.SourceBranchName)'
+trigger: none
+
+pool:
+  name: 'Geico Agents'
+
+parameters:
+- name: IsPlanOnly
+  displayName: 'Submit Plan Only?'
+  type: boolean
+  default: false
+- name: IsDestroy
+  displayName: 'Destroy All Resources?'
+  type: boolean
+  default: false
+- name: SelectedAWSEnvirons
+  displayName: "AWS Environments (Select Primary, DR is auto-added)"
+  type: 'object'
+  values:
+    - "dv1"
+    - "in1"
+    - "ut1"
+    - "pd1"
+  default:
+    - "dv1"
+    - "in1"
+    - "ut1"
+
+- name: AWSEnvirons
+  type: object
+  default: ${{ each env in parameters.SelectedAWSEnvirons }}:
+    - ${{ env }}
+    - ${{ env }}_dr
+
+- name: CRQStageUniqueName
+  displayName: 'Unique Name for CRQ Stage'
+  default: 'Prod'
+- name: ThemisScan
+  displayName: 'Perform Themis Scan?'
+  type: boolean
+  default: true
+
+resources:
+  repositories:
+    - repository: yaml-templates
+      type: git
+      name: Cloud 2.0 IAC Reference Automation/yaml-templates
+      ref: main
+    - repository: Terraform_Amazon_Connect
+      type: git
+      name: Enterprise Voice Services/Terraform_Amazon_Connect
+      ref: master
+    - repository: Terraform_Dynamic_Contact_Flow_Content
+      type: git
+      name: Enterprise Voice Services/Terraform_Dynamic_Contact_Flow_Content
+      ref: master
+    - repository: Terraform_DynamoDB
+      type: git
+      name: Enterprise Voice Services/Terraform_DynamoDB
+      ref: master
+    - repository: Terraform_DynamoDB_Record_Upload
+      type: git
+      name: Enterprise Voice Services/Terraform_DynamoDB_Record_Upload
+      ref: master
+    - repository: AWS_Common
+      type: git
+      name: Enterprise Voice Services/AWS_Common
+      ref: master
+    - repository: Terraform_LexV2_Bot
+      type: git
+      name: Enterprise Voice Services/Terraform_LexV2_Bot
+      ref: master
+    - repository: Terraform_CloudFormation_Stack
+      type: git
+      name: Enterprise Voice Services/Terraform_CloudFormation_Stack
+      ref: master
+
+stages:
+- ${{ if or(containsValue(parameters.AWSEnvirons, 'pd1'), containsValue(parameters.AWSEnvirons, 'pd1_dr') ) }}:
+  - template: Cloud2.0/geico-release/stage-templates/create-and-approve-crq-template-v1.yml@yaml-templates
+    parameters:
+      StageUniqueName:  ${{ parameters.CRQStageUniqueName }}
+      TemplateName: 'WEEKDAY_ENT_VOICE_APPLICATION_CICD_STANDARD'
+      EnterpriseAcronym: 'Evoice'
+      ApprovingManagerEmailAddress: 'JMatheny@geico.com'
+      AddtionalInfo: 'CRQ to Deploy claims Common resources to production'
+      Description: 'Deploy claims Common resources via Terraform to Production'
+      Region: 'All Regions'
+      Company: 'GEICO'
+      BusinessReason: 'New Functionality'
+      CRQDatesOptions: 'window'
+      CRQTimeWindow: '14'
+      Environment: 'Prod - AWS'
+      FirstName: 'Shan'
+      LastName: 'Foley'
+      EmailAddress: 'SFoley@geico.com'
+      AppDowntime: 'No'
+
+- ${{ each awsenv in parameters.AWSEnvirons }}:
+  - template: Cloud2.0/geico-release/stage-templates/tf-oss/tf-aws-plan-apply-template.yml@yaml-templates
+    parameters:
+      adoEnvironment: ${{ if eq(awsenv, 'dv1') }} 'Dev' ${{ else }} ${{ upper(awsenv) }}
+      configurationDirectory: main/aws
+      varFile: ${{ if endsWith(awsenv, '_dr') }} 'env/us-west-2/${{ replace(awsenv, '_dr', '') }}/terraform.tfvars' ${{ else }} 'env/us-east-1/${{ awsenv }}/terraform.tfvars'
+      isDestroy: ${{ parameters.IsDestroy }}
+      awsServiceConnection: 'aws-terraform-oss'
+      planOnly: ${{ parameters.IsPlanOnly }}
+      performThemisScan: ${{ parameters.ThemisScan }}
+      buildPool: ${{ if startsWith(awsenv, 'pd1') }} 'GZ-DotNETJava-Linux' ${{ else }} 'GZ-DotNETJava-NP-Linux'
+
+- ${{ if or(containsValue(parameters.AWSEnvirons, 'pd1'), containsValue(parameters.AWSEnvirons, 'pd1_dr') ) }}:
+  - stage: CompleteCRQ
+    displayName: 'Complete CRQ'
+    jobs:
+    - job: CRQRequest
+      variables:
+        CRNumber: $[ stagedependencies.ChangeRequest${{ parameters.CRQStageUniqueName }}.CRQRequest.outputs['Create.CRQNumber']]
+      steps:
+      - task: CICDCompleteCRQRemedy@0
+        inputs:
+          CRNumber: $(CRNumber)
+          StatusReason: 'Successfully Implemented'
