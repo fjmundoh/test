@@ -1,0 +1,212 @@
+name: '$(BuildDefinitionName).$(Date:yyyyMMdd).$(Rev:r)-$(Build.SourceBranchName)'
+trigger: none
+
+pool:
+  name: 'Geico Agents'
+
+parameters:
+- name: IsPlanOnly
+  displayName: 'Submit Plan Only?'
+  type: boolean
+  default: false
+- name: IsDestroy
+  displayName: 'Destroy All Resources?'
+  type: boolean
+  default: false
+- name: AWSEnvirons
+  displayName: "AWS Environments. Allowed values: dv1, dv1_dr, in1, in1_dr, ut1, ut1_dr, pd1, pd1_dr. Preface each with '- '"
+  type: 'object'
+  values:
+    - "dv1"
+    - "dv1_dr"
+    - "in1"
+    - "in1_dr"
+    - "ut1"
+    - "ut1_dr"
+    - "pd1"
+    - "pd1_dr"
+  default:
+    - "dv1"
+    - "in1"
+    - "ut1"
+- name: CRQStageUniqueName
+  displayName: 'Unique Name for CRQ Stage'
+  default: 'Prod'
+- name: ThemisScan
+  displayName: 'Perform Themis Scan?'
+  type: boolean
+  default: true
+
+resources:
+  # pipelines:
+    # - pipeline: <AWS Lambda Repo Name>
+    #   project: 'Enterprise Voice Services'
+    #   source: <AWS Lambda Repo Name>
+    #   branch: master
+  repositories:
+    - repository: yaml-templates
+      type: git
+      name: Cloud 2.0 IAC Reference Automation/yaml-templates
+      ref:  main
+    - repository: Terraform_Amazon_Connect
+      type: git
+      name: Enterprise Voice Services/Terraform_Amazon_Connect
+      ref: master
+    - repository: Terraform_Dynamic_Contact_Flow_Content
+      type: git
+      name: Enterprise Voice Services/Terraform_Dynamic_Contact_Flow_Content
+      ref: master
+    - repository: Terraform_DynamoDB
+      type: git
+      name: Enterprise Voice Services/Terraform_DynamoDB
+      ref: master
+    - repository: Terraform_DynamoDB_Record_Upload
+      type: git
+      name: Enterprise Voice Services/Terraform_DynamoDB_Record_Upload
+      ref: master
+    - repository: AWS_Common
+      type: git
+      name: Enterprise Voice Services/AWS_Common
+      ref: master
+    - repository: Terraform_LexV2_Bot
+      type: git
+      name: Enterprise Voice Services/Terraform_LexV2_Bot
+      ref: master
+    - repository: Terraform_CloudFormation_Stack
+      type: git
+      name: Enterprise Voice Services/Terraform_CloudFormation_Stack
+      ref: master
+stages:
+- ${{ if or(containsValue(parameters.AWSEnvirons, 'pd1'), containsValue(parameters.AWSEnvirons, 'pd1_dr') ) }}:
+  - template: Cloud2.0/geico-release/stage-templates/create-and-approve-crq-template-v1.yml@yaml-templates
+    parameters:
+      StageUniqueName:  ${{ parameters.CRQStageUniqueName }}
+      # Create CRQ
+      TemplateName: 'WEEKDAY_ENT_VOICE_APPLICATION_CICD_STANDARD'
+      EnterpriseAcronym: 'Evoice'
+      ApprovingManagerEmailAddress: 'JMatheny@geico.com'
+      AddtionalInfo: 'CRQ to Deploy claims Common resources to production'
+      Description: 'Deploy claims Common resources via Terraform to Production'
+      Region: 'All Regions'
+      Company: 'GEICO'
+      BusinessReason: 'New Functionality'
+      CRQDatesOptions: 'window'
+      CRQTimeWindow: '14'
+      Environment: 'Prod - AWS'
+      FirstName: 'Shan'
+      LastName: 'Foley'
+      EmailAddress: 'SFoley@geico.com'
+      AppDowntime: 'No'
+
+- ${{ each awsenv in parameters.AWSEnvirons }}:
+  - template: Cloud2.0/geico-release/stage-templates/tf-oss/tf-aws-plan-apply-template.yml@yaml-templates
+    parameters:
+    # AzureDevOps Environemnt Used for Approvals and Checks  
+      ${{ if eq(awsenv, 'dv1') }}:
+        adoEnvironment: "Dev"
+      ${{ else }}:
+        adoEnvironment: ${{ upper(awsenv) }}
+
+      # Configuration Directory name
+      configurationDirectory: main/aws
+
+      # Variable file used for terraform variable values
+      ${{ if endsWith(awsenv, '_dr') }}:
+        varFile: env/us-west-2/${{ replace(awsenv, '_dr', '') }}/terraform.tfvars
+      ${{ else }}:
+        varFile: env/us-east-1/${{ awsenv }}/terraform.tfvars
+
+      # Modify this parameter if more timout is needed.
+      #timeoutMinutes: 25
+
+      # Enable this if its a destroy run
+      isDestroy: ${{ parameters.IsDestroy }}
+
+      # Service Connection to connect to the Storage Backend
+      ${{ if startsWith(awsenv, 'pd1') }}:
+        backendServiceConnection: "az-telecom-voice-automation-pd1"
+      ${{ else }}:
+        backendServiceConnection: "az-telecom-voice-automation-ut1"
+
+      # Resource Group details of Storage
+      ${{ if startsWith(awsenv, 'pd1') }}:
+        backendResourcegroupName: 'gze-stfsto-pd1-rgp-001'
+      ${{ else }}:
+        backendResourcegroupName: 'gze-stfsto-np1-rgp-001'
+
+      # Storage Details
+      ${{ if startsWith(awsenv, 'pd1') }}:
+        backendStorageAccountName: 'gzestfstopd1sto001'
+      ${{ else }}:
+        backendStorageAccountName: 'gzestfstonp1sto001'
+
+      # Container Name in which the state files will be stored
+      ${{ if startsWith(awsenv, 'pd1') }}:
+        backendContainerName: "aws-telecom-pd"
+      ${{ else }}:
+        backendContainerName: "aws-telecom-np"
+
+      ${{ if endsWith(awsenv, '_dr') }}:
+        backendStateFileName: "gww2-telecom-claims-common-${{ replace(awsenv, '_dr', '') }}"
+      ${{ else }}:
+        backendStateFileName: "gwe1-telecom-claims-common-${{ replace(awsenv, '_dr', '') }}"
+
+      # Service Connection Details for Deployment
+      awsServiceConnection: 'aws-terraform-oss'
+
+      planOnly: ${{ parameters.IsPlanOnly }}
+
+      performThemisScan: ${{ parameters.ThemisScan }}
+
+      # Storage Details
+      ${{ if startsWith(awsenv, 'pd1') }}:
+        buildPool: 'GZ-DotNETJava-Linux'
+      ${{ else }}:
+        buildPool: 'GZ-DotNETJava-NP-Linux'
+
+      terraformLogLevel: ''
+      preJobCustomSteps:
+        - checkout: self
+          path: ./s
+        - checkout: Terraform_Amazon_Connect # checkout to folder
+          path: ./s/main/aws/modules/Terraform_Amazon_Connect
+        - checkout: Terraform_Dynamic_Contact_Flow_Content # checkout to folder
+          path: ./s/main/aws/modules/Terraform_Dynamic_Contact_Flow_Content
+        - checkout: Terraform_DynamoDB # checkout to folder
+          path: ./s/main/aws/modules/Terraform_DynamoDB
+        - checkout: Terraform_DynamoDB_Record_Upload # checkout to folder
+          path: ./s/main/aws/modules/Terraform_DynamoDB_Record_Upload
+        - checkout: Terraform_LexV2_Bot # checkout to folder
+          path: ./s/main/aws/modules/Terraform_LexV2_Bot
+        - checkout: AWS_Common # checkout to folder
+          path: ./s/main/external/AWS_Common
+        - checkout: Terraform_LexV2_Bot # checkout to folder
+          path: ./s/main/aws/modules/Terraform_LexV2_Bot
+        - checkout: Terraform_CloudFormation_Stack
+          path: ./s/main/aws/modules/Terraform_CloudFormation_Stack
+        - task: PowerShell@2
+          inputs:
+            targetType: 'inline'
+            pwsh: true
+            script: |
+              Install-Module AWS.Tools.Installer -Scope CurrentUser -Force ; Update-AWSToolsModule -confirm:$false -Scope CurrentUser
+              Install-Module -Name AWS.Tools.Common -Force -AllowClobber -confirm:$false  -Scope CurrentUser
+
+              # Update-AWSToolsModule
+              Install-Module -Name AWS.Tools.SecurityToken -Force -AllowClobber -confirm:$false  -Scope CurrentUser
+
+              # # Connect Workflow
+              Install-Module -Name AWS.Tools.Connect -Force -AllowClobber -confirm:$false -Scope CurrentUser
+
+- ${{ if or(containsValue(parameters.AWSEnvirons, 'pd1'), containsValue(parameters.AWSEnvirons, 'pd1_dr') ) }}:
+  - stage: CompleteCRQ
+    displayName: 'Complete CRQ'
+    jobs:
+    - job: CRQRequest
+      variables: 
+        CRNumber: $[ stagedependencies.ChangeRequest${{ parameters.CRQStageUniqueName }}.CRQRequest.outputs['Create.CRQNumber']]
+      steps:
+      - task: CICDCompleteCRQRemedy@0
+        inputs:
+          CRNumber: $(CRNumber)
+          StatusReason: 'Successfully Implemented'
